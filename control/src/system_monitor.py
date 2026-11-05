@@ -1,0 +1,439 @@
+"""A helper class for getting system metrics and status."""
+
+import subprocess
+import json
+import os
+import subprocess
+from datetime import datetime
+
+import docker
+import psutil
+import updater
+from docker import errors
+
+import identity
+import image_drift
+import staleness
+from logger import logger
+from poll_state import get_poll_report
+from system_monitor_types import Identity, Payload, Poll, Status, Updater, Version
+from updater import get_error, get_status_for_ui, get_updater_report, get_updating_state_for_ui, set_error, set_status_for_ui
+
+# Pseudo filesystems that are full by design and say nothing about real disk pressure.
+IGNORED_FILESYSTEMS = {"squashfs", "iso9660", "tmpfs", "devtmpfs", "overlay", "ramfs"}
+
+
+class SystemMonitor:
+    """
+    A helper class for getting system metrics and status.
+    Information tracked includes CPU, memory, disk, process usage and Docker containers.
+
+    Usage:
+    - get: Returns the current status of the system
+    - update: Updates the status of the system
+    - persist_status: Persists the status of the system to a JSON file
+
+    The rest of the methods are protected or private and should not be called directly.
+    """
+
+    timestamp: str = ""
+    status: str = ""
+    error: str = ""
+    extra: str = ""
+    metrics: dict
+    services: dict
+    image_drift: list
+    stale_components: list
+    node_address: str = ""
+    eth_address: str = ""
+    registration: str = identity.UNKNOWN
+    start_time: float
+    version: str = ""
+
+    _client: docker.DockerClient
+
+    def __init__(self, client: docker.DockerClient) -> None:
+        logger.debug("Initializing SystemMonitor.")
+
+        self.metrics = {}
+        self.services = {}
+        self.image_drift = []
+        self.stale_components = []
+        self.updater = Updater(
+            Branch="", AppliedCommit="", AppliedAt="", CheckedOutCommit="", RunningCommit="",
+            TargetCommit="", State="unknown", ScheduledFor=0, UpdatesDisabled=False,
+            LastAttemptAt="", LastSuccessAt="", LastError="", ConsecutiveFailures=0,
+        )
+        self.poll = Poll(ConsecutiveSkips=0, TotalSkips=0, LastSkipAt="", LongestHeldSeconds=0, Kills=0)
+        self.version = ""
+        self.start_time = datetime.now().timestamp()
+
+        self._client = client
+
+    def __str__(self) -> str:
+        return self.__dump_json()
+
+    def __repr__(self) -> str:
+        return self.__dump_json()
+
+    def get(self) -> Status:
+        """Returns the current status of the system"""
+
+        logger.debug("Fetching current system status.")
+
+        return Status(
+            Timestamp=self.timestamp,
+            Status=self.status,
+            Error=self.error,
+            Extra=self.extra,
+            Payload=Payload(
+                Version=Version(Semantic=self.version),
+                Identity=Identity(NodeAddress=self.node_address, EthAddress=self.eth_address, Registration=self.registration),
+                Metrics=self.metrics,
+                Services=self.services,
+                ImageDrift=self.image_drift,
+                StaleComponents=self.stale_components,
+                Updater=self.updater,
+                Poll=self.poll,
+            ),
+        )
+
+    # def set_status (self, status, error: str):
+    #     if status == self.status and error == self.error:
+    #         return
+    #
+    #     if status == "":
+    #         status = "OK"
+    #
+    #     self.status = status
+    #     self.error = error
+    #     if error != "":
+    #         logger.error("Status changed: "+status+ ", err:"+error)
+    #     else:
+    #         logger.info("Status changed: "+status+ ", err:"+error)
+
+    def run_with_stderr(self, cmd: str) -> str:
+        # split cmd to list
+        cmd_list = cmd.split()
+
+        result = subprocess.run(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+        return result.stdout.strip()
+
+    def update(self) -> None:
+        """Updates the status of the system"""
+
+        logger.debug("Updating system metrics and services info")
+
+        now = datetime.now()
+        metrics = self._get_metrics(now)
+        timestamp = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+        # Collected before the status is read, so anything found makes it into this same report.
+        self.image_drift = self._get_image_drift()
+        self.stale_components = self._get_stale_components()
+        self._check_disk_usage(metrics["Disks"])
+
+        # self.timestamp = now.isoformat()
+        self.timestamp = timestamp
+        # self.status = f"RAM = {round(metrics['MemoryUsedMBytes'], 2)}mb, CPU = {metrics['CPULoadPercent']}%"
+        self.status = get_status_for_ui()
+        self.error = get_error()
+        # TODO: What exactly is an error in this context?
+        # self.error = ""
+        # self.extra = get_status_for_ui()
+        # self.extra = "updating"
+        self.extra = get_updating_state_for_ui()
+        # Read after compare() has run, so it describes the poll that just happened.
+        self.updater = get_updater_report()
+        self.poll = get_poll_report()
+
+        self.metrics = metrics
+        self.services = self._get_docker_service_info()
+        self.version = self._get_version()
+        self.node_address = identity.get_node_address()
+        self.eth_address, self.registration = identity.resolve_eth_address(self.node_address)
+
+        logger.debug("Current version: %s", self.version)
+        logger.debug("System status updated.")
+
+    def _get_image_drift(self) -> list[dict]:
+        """Returns the services whose running image is not what the compose file asks for"""
+
+        compose_file = os.getenv("DOCKER_COMPOSE_FILE")
+
+        if not compose_file:
+            logger.error("DOCKER_COMPOSE_FILE is not set, skipping the image drift check")
+            return []
+
+        try:
+            drifted = image_drift.check(self._client, compose_file)
+        except Exception as error:  # pylint: disable=broad-except
+            # Drift reporting must never take the poll down with it - a node that cannot
+            # check is still a node that should report its metrics.
+            logger.error("Could not check for image drift: %s", error)
+            return []
+
+        summary = image_drift.summarize(drifted)
+
+        if summary:
+            logger.info(summary)
+            set_status_for_ui(summary)
+
+        return drifted
+
+    def _get_stale_components(self) -> list[dict]:
+        """Returns the components that have stopped refreshing their status file"""
+
+        compose_file = os.getenv("DOCKER_COMPOSE_FILE")
+
+        if not compose_file:
+            logger.error("DOCKER_COMPOSE_FILE is not set, skipping the staleness check")
+            return []
+
+        try:
+            reported = staleness.check(compose_file)
+        except Exception as error:  # pylint: disable=broad-except
+            # As with drift, a node that cannot run this check is still a node that should
+            # report everything else it knows.
+            logger.error("Could not check component staleness: %s", error)
+            return []
+
+        summary = staleness.summarize(reported)
+
+        if summary:
+            logger.info(summary)
+            set_status_for_ui(summary)
+
+        return reported
+
+    def _get_version(self) -> str:
+        # Get current git commit and git tag if available and combine them to a single version string.
+
+        commit = self.run_with_stderr("git rev-parse HEAD")
+        try:
+            tag = self.run_with_stderr("git describe --tags --exact-match")
+
+            if tag == "":
+                tag = "untagged"
+
+            if tag.find("fatal") > -1:
+                tag = "untagged"
+                #raise Exception(f"Git returned: {tag}")
+
+            return f"{commit} / {tag}"
+        except Exception as e:
+            logger.error(f"An error occurred while fetching the current git tag: {e}, using commit {commit} instead.")
+            return f"{commit} / untagged"
+
+    def persist(self, status_file_path: str) -> None:
+        """Persists the status of the system to a file"""
+
+        logger.debug("Persisting system status to file: %s", status_file_path)
+
+        with open(status_file_path, "w", encoding="utf8") as file:
+            json.dump(self.get(), file, indent=4)
+
+    def _get_metrics(self, now: datetime) -> dict:
+        """Returns a dictionary of system metrics (CPU, memory, disk, etc)"""
+
+        logger.debug("Fetching system metrics.")
+
+        # Get uptime by subtracting the boot time from the current time
+        boot_time = now.timestamp() - psutil.boot_time()
+        uptime = now.timestamp() - self.start_time
+
+        # Get the CPU load for the last minute.
+        # The psutil.cpu_percent() function returns the CPU usage as a percentage since the last call,
+        # so we need to call it twice with a delay to get the average CPU usage over a period of time.
+        cpu_load_percent = psutil.cpu_percent(interval=None)
+
+        # Get memory usage details
+        memory_info = psutil.virtual_memory()
+        memory_used_percent = memory_info.percent
+        memory_used_mbytes = self.__convert_bytes_to_mbytes(memory_info.used)
+        memory_total_mbytes = self.__convert_bytes_to_mbytes(memory_info.total)
+
+        metrics = {
+            "Uptime": uptime,
+            "BootTime": boot_time,
+            "CPULoadPercent": cpu_load_percent,
+            "MemoryUsedPercent": memory_used_percent,
+            "MemoryUsedMBytes": memory_used_mbytes,
+            "MemoryTotalMBytes": memory_total_mbytes,
+            "Disks": self._get_disk_info(),
+            "Processes": self._get_process_info(),
+        }
+
+        return metrics
+
+    def _get_disk_info(self) -> list[dict]:
+        """Returns a list of disk usage information"""
+
+        logger.debug("Fetching disk usage information.")
+
+        disk_info = []
+
+        for partition in psutil.disk_partitions():
+            usage = psutil.disk_usage(partition.mountpoint)
+            partition = {
+                "Mountpoint": partition.mountpoint,
+                "Fstype": partition.fstype,
+                "TotalMbytes": self.__convert_bytes_to_mbytes(usage.total),
+                "UsedMbytes": self.__convert_bytes_to_mbytes(usage.used),
+                "UsedPercent": usage.percent,
+            }
+            disk_info.append(partition)
+
+        return disk_info
+
+    def _check_disk_usage(self, disks: list[dict]) -> None:
+        """Raises the alarm when a real filesystem is filling up"""
+
+        warn_percent = float(os.getenv("DISK_WARN_PERCENT", "80"))
+        critical_percent = float(os.getenv("DISK_CRITICAL_PERCENT", "90"))
+
+        for disk in disks:
+            # Snap images are squashfs and permanently 100% full by design - most of the
+            # mounts on a typical Ubuntu host. Alerting on those would fire on every node
+            # forever, which is how a signal stops being read.
+            if disk.get("Fstype") in IGNORED_FILESYSTEMS:
+                continue
+
+            used = disk["UsedPercent"]
+            mount = disk["Mountpoint"]
+
+            if used < warn_percent:
+                continue
+
+            message = f"Disk {mount} is {used:.0f}% full"
+            logger.error(message)
+            set_status_for_ui(message)
+
+            # Only claim the error field if nothing more specific already has it: a failed
+            # update says more about what is wrong than a filling disk does.
+            if used >= critical_percent and not get_error():
+                set_error(message)
+
+    def _get_process_info(self) -> list[dict]:
+        """Returns a list of system processes and their memory usage"""
+
+        logger.debug("Fetching system process information.")
+
+        process_info = []
+
+        for proc in psutil.process_iter(["pid", "name", "cmdline", "memory_info"]):
+            if proc.ppid() == 1:  # Only include parent processes
+                memory_used_mb = 0.0
+                if proc.info["memory_info"] is not None:
+                    memory_used_mb = self.__convert_bytes_to_mbytes(proc.info["memory_info"].rss)
+
+                cmd_line = ""
+                if proc.info["cmdline"] is not None:
+                    cmd_line = " ".join(proc.info["cmdline"])
+                    cmd_line = (cmd_line[:75] + "...") if len(cmd_line) > 75 else cmd_line
+
+                process_data = {
+                    "Name": proc.info["name"],
+                    "Command": cmd_line,
+                    "MemoryUsedMbytes": memory_used_mb,
+                    "PID": proc.info["pid"],
+                    "ParentPID": proc.ppid(),  # Get parent PID
+                }
+
+                process_info.append(process_data)
+
+        return process_info
+
+    def _get_docker_service_info(self) -> list[dict]:
+        """Returns a list of running Docker containers and their details"""
+
+        logger.debug("Fetching Docker container information.")
+
+        service_info = []
+
+        for container in self._client.containers.list():
+            logger.debug("Container: %s", container.name)
+            container_attrs = container.attrs
+            image = container_attrs.get("Image")
+            if image is None:
+                image = "(None)"
+
+            cmdConf = ""
+            if container.attrs["Config"]["Cmd"] is not None:
+                cmdConf = " ".join(container.attrs["Config"]["Cmd"])
+
+            service_data = {
+                "Name": container.name,
+                "ImageTag": self.__get_image_tag(container),
+                "ImageDigest": self.__get_image_digest(container),
+                "Image": image,
+                "Command": cmdConf,
+                "Environment": self.__get_filtered_env_vars(container.attrs["Config"]["Env"]),
+                "CreatedAt": container_attrs["Created"],
+                # Created is when the container object was made and changes only on a
+                # recreate. StartedAt changes every time it starts, so a container that
+                # crashed and was restarted keeps its CreatedAt and gets a new StartedAt -
+                # which means CreatedAt alone cannot show a restart. RestartCount is how
+                # many times the daemon has had to do it.
+                #
+                # Both of these also give a consumer something to compare a component's
+                # self-reported uptime against. Uptime well short of the time since
+                # StartedAt means the process restarted inside a container that did not,
+                # which nothing else here detects - a hung process in a container that
+                # still looks healthy.
+                "StartedAt": container_attrs["State"]["StartedAt"],
+                "RestartCount": container_attrs.get("RestartCount", 0),
+                "ExitedAt": container_attrs["State"]["FinishedAt"],
+                "Status": container_attrs["State"]["Status"],
+                "Running": container_attrs["State"]["Running"],
+                "Paused": container_attrs["State"]["Paused"],
+                "Restarting": container_attrs["State"]["Restarting"],
+                "OOMKilled": container_attrs["State"]["OOMKilled"],
+                "Dead": container_attrs["State"]["Dead"],
+                "Pid": container_attrs["State"]["Pid"],
+                "ExitCode": container_attrs["State"]["ExitCode"],
+                "Error": container_attrs["State"]["Error"],
+            }
+
+            service_info.append(service_data)
+
+        logger.debug("Fetching done.")
+
+        return service_info
+
+    def __get_image_tag(self, container: docker.models.containers.Container) -> str:
+        """Returns the image reference the container was created from, eg. `nginx:latest`"""
+
+        # Taken from the container rather than the compose file, so this reports what is
+        # actually running. The two can legitimately differ, and that difference matters.
+        return container.attrs.get("Config", {}).get("Image", "")
+
+    def __get_image_digest(self, container: docker.models.containers.Container) -> str:
+        """Returns the digest of the image the container is running, if it has one"""
+
+        try:
+            repo_digests = container.image.attrs.get("RepoDigests", [])
+        except errors.ImageNotFound:
+            # The image can be removed while its container keeps running, leaving nothing
+            # to read a digest from.
+            return ""
+
+        # Locally built images were never pulled from a registry, so they have no digest.
+        return next(iter(repo_digests), "").partition("@")[2]
+
+    def __is_not_blacklisted(self, env_var: str) -> bool:
+        """Returns True if the environment variable is not blacklisted"""
+        return not any(blacklisted in env_var for blacklisted in ["ETHEREUM_ENDPOINT", "KEY", "SECRET", "PRIVATE_KEY"])
+
+    def __get_filtered_env_vars(self, env_vars: list[str]) -> list[str]:
+        """Returns a list of environment variables with sensitive information removed"""
+        return list(filter(self.__is_not_blacklisted, env_vars))
+
+    def __convert_bytes_to_mbytes(self, _bytes: int) -> float:
+        """Converts bytes to megabytes"""
+        return round(_bytes / 1024 / 1024, 6)
+
+    def __dump_json(self) -> str:
+        """Returns a pretty-printed string representation of the status object"""
+        return json.dumps(self.get(), indent=4)

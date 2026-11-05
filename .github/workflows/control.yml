@@ -1,0 +1,45 @@
+name: Control Validation
+
+# pull_request (never pull_request_target): a fork's PR runs with no access to
+# secrets and a read-only token, so an outside contributor cannot use CI to read
+# anything out of this repository. Keep it that way - pull_request_target runs in
+# this repo's context WITH secrets, and combined with a checkout of the PR head it
+# would run a stranger's code against them.
+#
+# This workflow needs no secrets at all. If a job here ever appears to need one,
+# that job belongs in the private repository instead.
+on:
+  pull_request:
+    branches:
+      - main
+
+# The default token scope is a standard exfiltration lever. Tests only need to read
+# the tree.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+
+    steps:
+      # Actions are pinned by commit SHA rather than tag. A tag can be moved or an
+      # upstream account compromised, and either would run arbitrary code here with
+      # whatever token this job holds.
+      - name: Checkout code
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements-dev.txt
+        working-directory: control
+
+      - name: Run pytest
+        run: .venv/bin/python -m pytest -s
+        working-directory: control

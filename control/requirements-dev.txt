@@ -1,0 +1,5 @@
+# Test-only dependencies. Kept separate from requirements.txt so a node installs
+# nothing it does not need to run.
+-r requirements.txt
+pytest>=8.0
+pytest-mock>=3.12
