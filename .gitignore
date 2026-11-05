@@ -1,0 +1,23 @@
+# Operator-specific and secret material. `ignore/` is scratch space that has held
+# private keys and API tokens - it is committed in the first commit of this repo,
+# before anything else, so it can never be staged by accident.
+ignore/
+uv.sh
+.env
+.data/
+config.json
+scripts/keys.json
+log.txt
+
+*venv
+node_modules/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+
+**/.DS_Store
+.idea/
+*.iml
+.vscode/
+.ai
+.tmp
