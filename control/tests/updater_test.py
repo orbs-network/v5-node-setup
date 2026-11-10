@@ -642,6 +642,25 @@ def test_the_report_states_disabled_when_updates_are_off(mocker: MockerFixture, 
     assert report["UpdatesDisabled"] is True
 
 
+def test_the_report_states_unknown_when_the_check_could_not_run(mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that a node which could not reach its remote does not report itself idle.
+
+    It has no target and no failed update to count, which is exactly the shape that used to
+    fall through to "idle" while the node sat behind, unable to fetch.
+    """
+
+    monkeypatch.setattr(updater, "_check_error", "")
+    monkeypatch.setattr(updater, "globalError", "")
+    mocker.patch.object(updater, "get_current_git_commit_hash", return_value="abc123")
+    updater.record_check_failure(RuntimeError("could not read Username for 'https://github.com'"))
+
+    report = updater.get_updater_report()
+
+    assert report["State"] == "unknown"
+    assert report["ConsecutiveFailures"] == 0
+    assert "could not read Username" in updater.get_error()
+
+
 def test_recorded_timestamps_are_explicitly_utc(mocker: MockerFixture) -> None:
     """Test that a browser parsing these gets UTC, not its own timezone.
 

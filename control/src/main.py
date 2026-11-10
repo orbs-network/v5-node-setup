@@ -34,7 +34,7 @@ def main():
         try:
             updater.compare()
         except Exception as e:
-            updater.set_error(f"An error occurred while comparing: {e}")
+            updater.record_check_failure(e)
 
     if cmd is None:
         # hard coded for now

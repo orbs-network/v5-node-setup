@@ -2,7 +2,26 @@
 
 What the control component publishes, and what a consumer has to be careful about.
 
-**Endpoint:** `http://<node>/service/control/status` — note `/service/`, singular. Control rewrites this file once a minute.
+**Endpoint:** `http://<node>/service/control/status`. Control rewrites this file once a minute.
+
+## Endpoints
+
+| URL | Serves |
+|---|---|
+| `/service/control/status` | control's report, the subject of most of this document |
+| `/service/<name>/status` | each component's own `status.json` — its `Timestamp`, `Payload.Uptime`, `Payload.Version.Semantic` |
+| `/service/<name>/logs?tail=N` | the component's log, as `text/plain` |
+
+`/service/` is canonical. nginx also rewrites the plural `/services/…` to it, so both answer, but build against the singular form.
+
+### Logs
+
+- **`tail` is the only way to bound a request, and unknown parameters are ignored silently.** `?last=300` is not an error — it is an unbounded request that returns the whole log. A container keeps up to 150MB of logs, and control's own file grows to 10MB before it rotates.
+- **Cap bytes yourself as well.** `tail` counts lines, and a line has no length limit. Stop reading after a fixed number of bytes, independently of `tail`.
+- Plain text, oldest line first, `Content-Disposition: inline`.
+- For containers the other Docker parameters work too: `since`, `until`, `timestamps`, `stdout`, `stderr`. `follow` returns `501`.
+- `control` and `updater` are files on the host rather than containers. **Only `tail` applies to them**; the other parameters return `400` naming the one at fault.
+- **`recovery` has a route but no log file, so it returns `404`.** That is expected — do not render it as a broken node.
 
 The node reports facts about itself. **It does not decide whether they are good or bad** — the page owns that judgement. The one exception is `Status` and `Error`, which carry control's own summary of what it found.
 
@@ -64,20 +83,25 @@ Three fields, each catching something the other two cannot.
 |---|---|
 | `Services[].RestartCount` | the daemon has had to restart this container |
 | `Services[].StartedAt` vs `CreatedAt` | the container restarted without being recreated |
-| the component's own `Payload.Uptime` vs `StartedAt` | **the process restarted inside a container that did not** |
+| the component's own `Payload.Uptime` vs its container's age | **the process restarted inside a container that did not** |
 
 `CreatedAt` changes only when a container is **recreated**, so on its own it cannot show a restart at all: a container that crashed and was brought back keeps its `CreatedAt` and gets a new `StartedAt`.
 
 And a process that died and was brought back *inside* a still-running container changes neither. Only the component's own uptime reveals that, which is why each component publishes one. A hung process inside a container that looks perfectly healthy is exactly the failure this is for.
 
-**So read the divergence, not the number:**
+**So read the divergence, not the number.** The container's age to compare against is **`Timestamp − StartedAt`**, where `Timestamp` is the one in the component's own status file: how old the container was at the moment the component wrote its `Uptime`. Both numbers then come from the node's clock, at the same instant.
+
+Do **not** use `now − StartedAt`. That mixes in the browser's clock and however stale the status file is, and a component that writes rarely will look as if it restarted every time.
 
 | Reading | Meaning |
 |---|---|
-| `Uptime` ≈ now − `StartedAt` | healthy — the process has been up as long as its container |
-| `Uptime` **much less than** now − `StartedAt` | the process restarted inside a running container. **Investigate.** Nothing else here detects it |
-| `Uptime` **much greater than** now − `StartedAt` | that component is computing uptime wrong. A reporting bug, still worth surfacing |
+| `Uptime` ≈ `Timestamp − StartedAt` | healthy — the process has been up as long as its container |
+| `Uptime` **much less than** `Timestamp − StartedAt` | the process restarted inside a running container. **Investigate.** Nothing else here detects it |
+| `Uptime` **much greater than** `Timestamp − StartedAt` | that component is computing uptime wrong. A reporting bug, still worth surfacing |
+| `Timestamp` earlier than `StartedAt` | the status file predates this container — a leftover from before it was recreated. **No verdict**; it says nothing about the current process |
 | no `Uptime` field | unknown, which is not the same as fine |
+
+"Much" needs a tolerance, because components write on coarse intervals. `max(600s, 10% of the container's age)` absorbs those without swallowing a real restart.
 
 Siblings are the other half of it: components brought up by the same `docker compose up` should report similar uptimes. **An outlier among siblings is a hint to look, not a healthy row.**
 
@@ -156,7 +180,11 @@ Everything about updating, as fields rather than prose. Before this the only way
 | `scheduled` | waiting for this node's slot in a staggered rollout — see `ScheduledFor`, a unix timestamp |
 | `failing` | the last update failed; see `ConsecutiveFailures` and `LastError` |
 | `disabled` | `DONT_UPDATE` is set on the node |
-| `unknown` | no poll has completed yet in this process |
+| `unknown` | this tick could not determine what the node should run — the remote could not be fetched, the descriptor could not be read, or no poll has completed yet. The reason is in the top-level `Error` |
+
+`idle` is only reported when the check actually completed. A node that cannot reach its remote has no target and nothing to retry, so it reports `unknown`, never `idle` — it may be any number of commits behind and will stay there until it can fetch again.
+
+**`Branch` says which baseline a node follows.** Nodes are not required to follow the same branch, for instance while one is trying out changes the others have not taken yet. Compare each node against the branch it reports, not against one configuration for the whole fleet; otherwise nodes that are simply on a different branch show up as mismatched.
 
 **`ConsecutiveFailures` is the field to watch.** A failed update never records the commit, so the node retries every minute, in a fresh process each time. This counter is persisted on the node precisely so that a node which has failed thousands of times running does not look identical to one that failed once. Anything above a handful means a node that is stuck and will stay stuck.
 
@@ -226,7 +254,7 @@ An empty `EthAddress`, `RegistryDigest` or `ImageDigest` means *not known*. Rend
 
 ### Do not compare docker tags against self-reported versions
 
-Each component reports a version about itself (`Payload.Version.Semantic` on its own endpoint). **That is not comparable to its docker tag.** They are different naming schemes, and comparing them produces false "behind" markers on nodes that are entirely up to date. For example:
+Each component reports a version about itself (`Payload.Version.Semantic` at `/service/<name>/status`). **That is not comparable to its docker tag.** They are different naming schemes, and comparing them produces false "behind" markers on nodes that are entirely up to date. For example:
 
 | component | docker tag | self-reported |
 |---|---|---|

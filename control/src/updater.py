@@ -73,6 +73,12 @@ _running_commit = ""
 _branch = ""
 _target_commit = ""
 
+# Why this tick's compare() could not finish, if it could not. A node that cannot reach its
+# remote never resolves a target and never attempts an update, so there is nothing for the
+# failure counter to count - without this it fell through to "idle", a green tick on a node
+# that is stuck and will stay stuck.
+_check_error = ""
+
 
 def get_running_commit():
     """The commit whose updater code is executing, remembered on first call."""
@@ -181,6 +187,8 @@ def get_updater_report():
         update_state = "disabled"
     elif failures:
         update_state = "failing"
+    elif _check_error:
+        update_state = "unknown"
     elif updateTargetTime:
         update_state = "scheduled"
     elif _target_commit and applied and not _target_commit.startswith(applied[:7]) and not applied.startswith(_target_commit[:7]):
@@ -211,6 +219,14 @@ def _applied_at():
             return json.load(handle).get("applied_at", "")
     except (OSError, ValueError, AttributeError):
         return ""
+
+
+def record_check_failure(error):
+    """Records that compare() could not decide anything this tick, and why."""
+
+    global _check_error
+    _check_error = str(error)
+    set_error(f"An error occurred while comparing: {error}")
 
 
 def set_error(error):
