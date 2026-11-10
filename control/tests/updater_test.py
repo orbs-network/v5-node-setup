@@ -657,8 +657,56 @@ def test_the_report_states_unknown_when_the_check_could_not_run(mocker: MockerFi
     report = updater.get_updater_report()
 
     assert report["State"] == "unknown"
+    assert "could not read Username" in report["StateReason"]
     assert report["ConsecutiveFailures"] == 0
     assert "could not read Username" in updater.get_error()
+
+
+def test_a_process_that_never_checked_does_not_report_idle(mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that control run without `poll` says no check ran, rather than claiming idle"""
+
+    monkeypatch.setattr(updater, "_check_error", updater.NO_CHECK_RAN)
+    mocker.patch.object(updater, "get_current_git_commit_hash", return_value="abc123")
+
+    report = updater.get_updater_report()
+
+    assert report["State"] == "unknown"
+    assert report["StateReason"] == updater.NO_CHECK_RAN
+
+
+def test_the_report_states_idle_with_no_reason_after_a_clean_check(mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that a completed check with nothing to do is idle, and carries no reason"""
+
+    monkeypatch.setattr(updater, "_check_error", "")
+    mocker.patch.object(updater, "get_current_git_commit_hash", return_value="abc123")
+
+    report = updater.get_updater_report()
+
+    assert report["State"] == "idle"
+    assert report["StateReason"] == ""
+
+
+@pytest.mark.parametrize(
+    "url, published",
+    [
+        ("https://github.com/orbs-network/v5-node-setup.git", "https://github.com/orbs-network/v5-node-setup.git"),
+        ("https://x-access-token:ghp_secret@github.com/orbs-network/v5-node-setup.git", "https://github.com/orbs-network/v5-node-setup.git"),
+        ("https://user@github.com/orbs-network/v5-node-setup.git", "https://github.com/orbs-network/v5-node-setup.git"),
+        ("git@github.com:orbs-network/v5-node-setup.git", "git@github.com:orbs-network/v5-node-setup.git"),
+    ],
+)
+def test_the_remote_is_published_without_credentials(url: str, published: str) -> None:
+    """Test that a token embedded in the remote URL never reaches the public status"""
+
+    assert updater.strip_credentials(url) == published
+
+
+def test_an_unreadable_remote_is_reported_empty(mocker: MockerFixture) -> None:
+    """Test that a checkout with no origin reports an empty remote rather than failing"""
+
+    mocker.patch.object(updater, "run", side_effect=updater.CommandError(["git"], 1, ""))
+
+    assert updater.get_remote_url() == ""
 
 
 def test_recorded_timestamps_are_explicitly_utc(mocker: MockerFixture) -> None:

@@ -156,12 +156,14 @@ Control already warns at 80% and escalates at 90% into `Status` and `Error`, so 
 
 ```json
 {
+  "Remote": "https://github.com/orbs-network/v5-node-setup.git",
   "Branch": "main",
   "AppliedCommit": "73a5b9e...", "AppliedAt": "2026-10-01T10:43:15.123Z",
   "CheckedOutCommit": "73a5b9e...",
   "RunningCommit": "fda624c...",
   "TargetCommit": "73a5b9e...",
   "State": "idle",
+  "StateReason": "",
   "ScheduledFor": 0,
   "UpdatesDisabled": false,
   "LastAttemptAt": "...", "LastSuccessAt": "...",
@@ -180,11 +182,13 @@ Everything about updating, as fields rather than prose. Before this the only way
 | `scheduled` | waiting for this node's slot in a staggered rollout — see `ScheduledFor`, a unix timestamp |
 | `failing` | the last update failed; see `ConsecutiveFailures` and `LastError` |
 | `disabled` | `DONT_UPDATE` is set on the node |
-| `unknown` | this tick could not determine what the node should run — the remote could not be fetched, the descriptor could not be read, or no poll has completed yet. The reason is in the top-level `Error` |
+| `unknown` | this tick could not determine what the node should run — the remote could not be fetched, the descriptor could not be read, or no check has run. See `StateReason` |
 
 `idle` is only reported when the check actually completed. A node that cannot reach its remote has no target and nothing to retry, so it reports `unknown`, never `idle` — it may be any number of commits behind and will stay there until it can fetch again.
 
-**`Branch` says which baseline a node follows.** Nodes are not required to follow the same branch, for instance while one is trying out changes the others have not taken yet. Compare each node against the branch it reports, not against one configuration for the whole fleet; otherwise nodes that are simply on a different branch show up as mismatched.
+**`StateReason` says why**, next to the state it explains: the check failure for `unknown` (or `no update check has run in this process` when control ran without polling), the last error for `failing`, the target and applied commits for `behind`. It is empty when `idle`. Render it rather than correlating against the top-level `Error`, which every other check shares.
+
+**`Remote` and `Branch` together say which baseline a node follows.** Nodes are not required to follow the same branch or even the same repository — a node can be trying out changes the others have not taken yet, or be pointed at a fork by mistake. Compare each node against the remote and branch it reports, not against one configuration for the whole fleet, and treat an unexpected `Remote` as the finding it is. Credentials are stripped from `Remote` before it is published; an empty value means the checkout has no `origin`.
 
 **`ConsecutiveFailures` is the field to watch.** A failed update never records the commit, so the node retries every minute, in a fresh process each time. This counter is persisted on the node precisely so that a node which has failed thousands of times running does not look identical to one that failed once. Anything above a handful means a node that is stuck and will stay stuck.
 

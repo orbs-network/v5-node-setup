@@ -76,8 +76,10 @@ _target_commit = ""
 # Why this tick's compare() could not finish, if it could not. A node that cannot reach its
 # remote never resolves a target and never attempts an update, so there is nothing for the
 # failure counter to count - without this it fell through to "idle", a green tick on a node
-# that is stuck and will stay stuck.
-_check_error = ""
+# that is stuck and will stay stuck. It starts out set, so a process that never ran a check
+# at all (control run by hand, without `poll`) says so instead of claiming to be idle.
+NO_CHECK_RAN = "no update check has run in this process"
+_check_error = NO_CHECK_RAN
 
 
 def get_running_commit():
@@ -183,20 +185,23 @@ def get_updater_report():
     failures = int(state.get("consecutive_failures", 0))
     disabled = os.getenv("DONT_UPDATE", "false") == "true"
 
+    # The reason sits next to the state it explains, so a consumer can render why without
+    # correlating against the top-level Error, which is shared with every other check.
     if disabled:
-        update_state = "disabled"
+        update_state, reason = "disabled", "DONT_UPDATE is set to true on this node"
     elif failures:
-        update_state = "failing"
+        update_state, reason = "failing", state.get("last_error", "")
     elif _check_error:
-        update_state = "unknown"
+        update_state, reason = "unknown", _check_error
     elif updateTargetTime:
-        update_state = "scheduled"
+        update_state, reason = "scheduled", "waiting for this node's slot in a staggered rollout"
     elif _target_commit and applied and not _target_commit.startswith(applied[:7]) and not applied.startswith(_target_commit[:7]):
-        update_state = "behind"
+        update_state, reason = "behind", f"target {_target_commit[:7]} is not the applied {applied[:7]}"
     else:
-        update_state = "idle"
+        update_state, reason = "idle", ""
 
     return {
+        "Remote": get_remote_url(),
         "Branch": _branch,
         "AppliedCommit": applied,
         "AppliedAt": _applied_at(),
@@ -204,6 +209,7 @@ def get_updater_report():
         "RunningCommit": get_running_commit(),
         "TargetCommit": _target_commit,
         "State": update_state,
+        "StateReason": reason,
         "ScheduledFor": updateTargetTime,
         "UpdatesDisabled": disabled,
         "LastAttemptAt": state.get("last_attempt_at", ""),
@@ -309,6 +315,33 @@ def get_current_git_tag():
     result = subprocess.run(["git", "describe", "--tags", "--exact-match"], capture_output=True, text=True, check=False)
 
     return result.stdout.strip()
+
+
+def get_remote_url():
+    """The URL the node fetches from, safe to publish.
+
+    Branch alone cannot tell this repository's `dev` from a fork's. The status is served to
+    the internet, and an https remote can carry a token as `user:token@host`, so anything
+    before the host is dropped rather than published.
+    """
+
+    try:
+        url = run(["git", "config", "--get", "remote.origin.url"])
+    except CommandError:
+        return ""
+
+    return strip_credentials(url)
+
+
+def strip_credentials(url):
+    """Drops any `user:password@` from a URL. Leaves scp-style `git@host:path` alone."""
+
+    scheme, separator, rest = url.partition("://")
+    if not separator:
+        return url
+
+    authority, slash, path = rest.partition("/")
+    return f"{scheme}://{authority.rpartition('@')[2]}{slash}{path}"
 
 
 def get_current_git_commit_hash():
@@ -558,9 +591,13 @@ def get_remote_latest_commit_hash():
 
 
 def compare():
-    global isInUpdatingState, updateTargetTime, _branch, _target_commit
+    global isInUpdatingState, updateTargetTime, _branch, _target_commit, _check_error
 
     logger.debug("Comparing current state with metadata")
+
+    # Cleared on entry. If anything below raises, main records why through
+    # record_check_failure, which sets it again.
+    _check_error = ""
 
     # Before anything can move the working copy, so this records the code that is running
     # rather than the code that is about to be checked out.
@@ -572,6 +609,7 @@ def compare():
 
     if not node_address:
         logger.error("NODE_ADDRESS is not set, cannot tell whether this node is a target")
+        _check_error = "NODE_ADDRESS is not set, so this node cannot tell whether it is a target"
         return
 
     # Check if I'm in the target list in any way. Both sides are normalised, so a

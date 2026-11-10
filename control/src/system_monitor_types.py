@@ -20,6 +20,9 @@ class Updater(TypedDict):
     status string, which mixes update state with everything else control reports.
     """
 
+    # Where the node fetches from, with any credentials removed. Branch alone cannot tell
+    # this repository's branch from a fork's.
+    Remote: str
     Branch: str
     AppliedCommit: str
     AppliedAt: str
@@ -29,6 +32,8 @@ class Updater(TypedDict):
     RunningCommit: str
     TargetCommit: str
     State: str
+    # Why State is what it is; empty when idle.
+    StateReason: str
     ScheduledFor: int
     UpdatesDisabled: bool
     LastAttemptAt: str
