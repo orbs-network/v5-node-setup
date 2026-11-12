@@ -228,3 +228,29 @@ def test_a_container_without_a_restart_count_reports_zero(mocker: MockerFixture)
     client.containers.list.return_value = [container]
 
     assert SystemMonitor(client=client)._get_docker_service_info()[0]["RestartCount"] == 0
+
+
+def test_secrets_are_kept_out_of_the_published_environment(mocker: MockerFixture) -> None:
+    """Test that sensitive variables never reach the public status.
+
+    status.json is served to anyone, and a GitHub token baked into an image's environment
+    was published this way, because TOKEN was not on the list.
+    """
+
+    client = mocker.Mock()
+    container = _container(mocker, "vm-example", "example/vm:v1", [])
+    container.attrs["Config"]["Env"] = [
+        "NODE_ADDRESS=0xabc",
+        "GITHUB_CLONE_TOKEN=github_pat_example",
+        "DB_PASSWORD=example",
+        "SERVICE_CREDENTIALS=example",
+        "BASIC_AUTH=user:pass",
+        "NODE_PRIVATE_KEY=example",
+        "API_SECRET=example",
+        "ETHEREUM_ENDPOINT=https://rpc.example/?key=example",
+    ]
+    client.containers.list.return_value = [container]
+
+    environment = SystemMonitor(client=client)._get_docker_service_info()[0]["Environment"]
+
+    assert environment == ["NODE_ADDRESS=0xabc"]

@@ -424,7 +424,10 @@ class SystemMonitor:
 
     def __is_not_blacklisted(self, env_var: str) -> bool:
         """Returns True if the environment variable is not blacklisted"""
-        return not any(blacklisted in env_var for blacklisted in ["ETHEREUM_ENDPOINT", "KEY", "SECRET", "PRIVATE_KEY"])
+        return not any(
+            blacklisted in env_var
+            for blacklisted in ["ETHEREUM_ENDPOINT", "KEY", "SECRET", "PRIVATE_KEY", "TOKEN", "PASSWORD", "CREDENTIAL", "AUTH"]
+        )
 
     def __get_filtered_env_vars(self, env_vars: list[str]) -> list[str]:
         """Returns a list of environment variables with sensitive information removed"""

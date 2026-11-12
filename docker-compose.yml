@@ -169,18 +169,6 @@ services:
       - ethereum-reader
     healthcheck:
       test: "test $$(( $$(date +%s) - $$(stat -c %Y /opt/orbs/status/status.json) )) -lt 600"
-  vm-l3-dummy-service:
-    logging: *default-logging
-    container_name: vm-l3-dummy-service
-    image: orbsnetworkstaging/vm-l3-dummy-service:1.0.0
-    restart: unless-stopped
-    volumes:
-      - ./.data/vm-l3-dummy-service:/opt/orbs/status
-    environment:
-      - MULTILOG_DISABLED=1
-      - STATUS_FILE_PATH=/opt/orbs/status/status.json
-    healthcheck:
-      test: "test $$(( $$(date +%s) - $$(stat -c %Y /opt/orbs/status/status.json) )) -lt 600"
 
 networks:
   default:
