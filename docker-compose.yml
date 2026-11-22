@@ -42,17 +42,18 @@ services:
   ethereum-reader:
     logging: *default-logging
     container_name: ethereum-reader
-    image: lukerogerson1/management-service:v2.7.1-immediate
+    image: orbsnetworkstaging/management-service:v5.0.0
     command: "npm start"
     volumes:
       - ./.data/ethereum-reader:/opt/orbs/status
     environment:
       - DOCKER_COMPOSE_DESCRIPTOR_URL
-      - INJECT_FAKE_GUARDIAN={"name":"jordalishNode","ip":"0x7F000001"}
       - NODE_ADDRESS
       - ETHEREUM_ENDPOINT
+    # v5.0.0 is built without boyar's healthcheck.js, so check the status file's age like
+    # the other services do.
     healthcheck:
-      test: node healthcheck.js || exit 1
+      test: "test $$(( $$(date +%s) - $$(stat -c %Y /opt/orbs/status/status.json) )) -lt 600"
     networks:
       default:
         aliases:
