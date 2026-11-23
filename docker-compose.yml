@@ -43,14 +43,13 @@ services:
     logging: *default-logging
     container_name: ethereum-reader
     # Pinned by digest: a tag can be re-pushed on Docker Hub, the digest cannot.
-    image: orbsnetworkstaging/evm-reader:v5.1.0@sha256:254a31fbb4d3100272388f93e315c968d5adbbf8f6cf4a8baee556c4178be431
+    image: orbsnetworkstaging/evm-reader:v5.2.0@sha256:29b45487ee5454deb015192aa009280860c55362ed665d32a6b17af3b2f3ffcd
     command: "npm start"
     # Also holds the state cache (cache/state.json.gz), so a restart resumes instead of
     # replaying from the first block. nginx serves only status.json from here.
     volumes:
       - ./.data/ethereum-reader:/opt/orbs/status
     environment:
-      - DOCKER_COMPOSE_DESCRIPTOR_URL
       - NODE_ADDRESS
       - ETHEREUM_ENDPOINT
     # The image is built without boyar's healthcheck.js, so check the status file's age like
@@ -65,7 +64,7 @@ services:
   matic-reader:
     logging: *default-logging
     container_name: matic-reader
-    image: orbsnetworkstaging/evm-reader:v5.1.0@sha256:254a31fbb4d3100272388f93e315c968d5adbbf8f6cf4a8baee556c4178be431
+    image: orbsnetworkstaging/evm-reader:v5.2.0@sha256:29b45487ee5454deb015192aa009280860c55362ed665d32a6b17af3b2f3ffcd
     command: "npm start"
     # Also holds the state cache, like ethereum-reader's.
     volumes:
