@@ -42,7 +42,8 @@ services:
   ethereum-reader:
     logging: *default-logging
     container_name: ethereum-reader
-    image: orbsnetworkstaging/evm-reader:v5.1.0
+    # Pinned by digest: a tag can be re-pushed on Docker Hub, the digest cannot.
+    image: orbsnetworkstaging/evm-reader:v5.1.0@sha256:254a31fbb4d3100272388f93e315c968d5adbbf8f6cf4a8baee556c4178be431
     command: "npm start"
     # Also holds the state cache (cache/state.json.gz), so a restart resumes instead of
     # replaying from the first block. nginx serves only status.json from here.
@@ -64,19 +65,21 @@ services:
   matic-reader:
     logging: *default-logging
     container_name: matic-reader
-    image: orbsnetworkstaging/management-service:v2.7.1-immediate
+    image: orbsnetworkstaging/evm-reader:v5.1.0@sha256:254a31fbb4d3100272388f93e315c968d5adbbf8f6cf4a8baee556c4178be431
     command: "npm start"
+    # Also holds the state cache, like ethereum-reader's.
     volumes:
       - ./.data/matic-reader:/opt/orbs/status
     environment:
-      - INJECT_FAKE_GUARDIAN={"name":"jordalishNode","ip":"0x7F000001"}
       - NODE_ADDRESS
       - ETHEREUM_GENESIS_CONTRACT=0x35eA0D75b2a3aB06393749B4651DfAD1Ffd49A77
       - ETHEREUM_ENDPOINT=${MATIC_ENDPOINT}
-      - ETHEREUM_FIRST_BLOCK=21700000
+      # The block before the registry was deployed on Polygon (25502848); nothing earlier
+      # holds an event. Changing it invalidates the state cache, so only change it on purpose.
+      - ETHEREUM_FIRST_BLOCK=25502847
       - ETHEREUM_POLL_INTERVAL_SECONDS=300
     healthcheck:
-      test: node healthcheck.js || exit 1
+      test: "test $$(( $$(date +%s) - $$(stat -c %Y /opt/orbs/status/status.json) )) -lt 600"
 
   ethereum-writer:
     logging: *default-logging
