@@ -42,15 +42,17 @@ services:
   ethereum-reader:
     logging: *default-logging
     container_name: ethereum-reader
-    image: orbsnetworkstaging/management-service:v5.0.0
+    image: orbsnetworkstaging/evm-reader:v5.1.0
     command: "npm start"
+    # Also holds the state cache (cache/state.json.gz), so a restart resumes instead of
+    # replaying from the first block. nginx serves only status.json from here.
     volumes:
       - ./.data/ethereum-reader:/opt/orbs/status
     environment:
       - DOCKER_COMPOSE_DESCRIPTOR_URL
       - NODE_ADDRESS
       - ETHEREUM_ENDPOINT
-    # v5.0.0 is built without boyar's healthcheck.js, so check the status file's age like
+    # The image is built without boyar's healthcheck.js, so check the status file's age like
     # the other services do.
     healthcheck:
       test: "test $$(( $$(date +%s) - $$(stat -c %Y /opt/orbs/status/status.json) )) -lt 600"
