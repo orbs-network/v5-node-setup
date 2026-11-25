@@ -12,6 +12,7 @@ Two different things can drift, and they fail in different ways:
 import json
 import os
 import time
+from typing import Any
 
 import docker
 import yaml
@@ -101,15 +102,47 @@ def registry_digests(client: docker.DockerClient, image_refs: list[str], now: fl
     return refreshed
 
 
+def registry_checked_at() -> float:
+    """Returns when every registry digest was last read in full, or 0 if that never happened"""
+
+    return float(_load_cache().get("checked_at", 0))
+
+
+def is_drifted(record: dict[str, Any]) -> bool:
+    """Whether a service's running image is known not to be what compose asks for"""
+
+    return bool(record["ContainerOutdated"] or record["ImageOutdated"] or not record["Running"])
+
+
+def is_current(record: dict[str, Any]) -> bool:
+    """Whether a service was positively confirmed to run what the registry serves.
+
+    Stricter than "not drifted": a service whose digest could not be read on either side is
+    neither, because nothing was actually compared.
+    """
+
+    return (
+        not is_drifted(record)
+        and bool(record["LocalDigest"])
+        and record["LocalDigest"] == record["RegistryDigest"]
+    )
+
+
 def check(client: docker.DockerClient, compose_file: str) -> list[dict]:
     """Returns one record per compose service whose running image is not what compose asks for"""
+
+    return [record for record in inspect(client, compose_file) if is_drifted(record)]
+
+
+def inspect(client: docker.DockerClient, compose_file: str) -> list[dict[str, Any]]:
+    """Returns one record per compose service comparing its running image with compose and the registry"""
 
     logger.debug("Checking for image drift against %s", compose_file)
 
     expected = compose_images(compose_file)
     digests = registry_digests(client, sorted(set(expected.values())), time.time())
 
-    drifted = []
+    records = []
 
     for container_name, image_ref in sorted(expected.items()):
         record = {
@@ -128,7 +161,7 @@ def check(client: docker.DockerClient, compose_file: str) -> list[dict]:
             # The compose file names an image that was never pulled, so the service cannot
             # be running what it should be.
             record["ContainerOutdated"] = True
-            drifted.append(record)
+            records.append(record)
             continue
 
         record["LocalDigest"] = next(iter(local_image.attrs.get("RepoDigests", [])), "").partition("@")[2]
@@ -144,12 +177,11 @@ def check(client: docker.DockerClient, compose_file: str) -> list[dict]:
         if record["LocalDigest"] and record["RegistryDigest"]:
             record["ImageOutdated"] = record["LocalDigest"] != record["RegistryDigest"]
 
-        if record["ContainerOutdated"] or record["ImageOutdated"] or not record["Running"]:
-            drifted.append(record)
+        records.append(record)
 
-    logger.debug("Image drift check found %d drifted service(s)", len(drifted))
+    logger.debug("Image drift check found %d drifted service(s)", sum(1 for record in records if is_drifted(record)))
 
-    return drifted
+    return records
 
 
 def summarize(drifted: list[dict]) -> str:

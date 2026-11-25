@@ -109,7 +109,7 @@ One benign case: `logger` writes its status once at startup and then every five 
 
 ### `Payload.ImageDrift[]`
 
-Lists **only** components whose running image does not match what the compose file resolves to. A component absent from this array is up to date.
+Lists **only** components whose running image does not match what the compose file resolves to. Absence from this array alone is **not** a verdict: an empty array also comes back before the first check, after a failed one, or for a component whose digests could not be read. Use `ImageDriftCheck.Current` for "up to date".
 
 ```json
 {
@@ -127,6 +127,20 @@ Lists **only** components whose running image does not match what the compose fi
 - `ImageOutdated` — the image on disk is behind the registry
 
 `RegistryDigest` is refreshed **every six hours**, because registry reads count against Docker Hub's anonymous pull rate limit and the poll runs every minute. Do not present it as real-time. An **empty** `RegistryDigest` means the registry could not be reached: that is unknown, not up to date.
+
+### `Payload.ImageDriftCheck`
+
+What the drift check covered, so `ImageDrift` can be read.
+
+```json
+{ "CheckedAt": "2026-11-25T14:40:01.123Z", "RegistryCheckedAt": "2026-11-25T09:12:44.501Z", "Current": ["ethereum-reader", "matic-reader", "nginx"] }
+```
+
+- `CheckedAt` — when this poll's check completed. Empty means it did not run: everything is unknown.
+- `RegistryCheckedAt` — when every registry digest was last read in full (every six hours, see above). Empty means never.
+- `Current` — components **positively confirmed** to run exactly the digest the registry serves: container on the image on disk, and both digests read and equal.
+
+Per component, then: listed in `ImageDrift` → behind; listed in `Current` → up to date; in neither → unknown. Locally built components (`logger`) have no registry image and are never in either.
 
 ### `Payload.StaleComponents[]`
 

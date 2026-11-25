@@ -151,3 +151,36 @@ def test_summarize_is_empty_when_nothing_drifted() -> None:
     """Test that a clean check produces no status line"""
 
     assert image_drift.summarize([]) == ""
+
+
+def test_matching_digests_are_confirmed_current(tmp_path: Path, mocker: MockerFixture) -> None:
+    """Test that a service whose digests match is positively reported current"""
+
+    client = _client(mocker, local_id="sha256:aaa", local_digest="sha256:same", registry_digest="sha256:same", container_image_id="sha256:aaa")
+
+    records = image_drift.inspect(client, _compose_file(tmp_path))
+
+    assert [record["Service"] for record in records if image_drift.is_current(record)] == ["ethereum-reader", "unnamed-service"]
+    assert image_drift.registry_checked_at() > 0
+
+
+def test_unreadable_registry_digest_is_neither_drifted_nor_current(tmp_path: Path, mocker: MockerFixture) -> None:
+    """Test that a service nothing could be compared for is left unknown, not called current"""
+
+    client = _client(mocker, local_id="sha256:aaa", local_digest="sha256:local", registry_digest="", container_image_id="sha256:aaa")
+    client.images.get_registry_data.side_effect = RuntimeError("registry unreachable")
+
+    records = image_drift.inspect(client, _compose_file(tmp_path))
+
+    assert not any(image_drift.is_drifted(record) or image_drift.is_current(record) for record in records)
+    assert image_drift.registry_checked_at() == 0
+
+
+def test_a_drifted_service_is_not_current(tmp_path: Path, mocker: MockerFixture) -> None:
+    """Test that a container not recreated after a pull is not called current, though digests match"""
+
+    client = _client(mocker, local_id="sha256:new", local_digest="sha256:same", registry_digest="sha256:same", container_image_id="sha256:old")
+
+    records = image_drift.inspect(client, _compose_file(tmp_path))
+
+    assert not any(image_drift.is_current(record) for record in records)

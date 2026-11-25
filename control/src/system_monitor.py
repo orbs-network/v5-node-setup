@@ -4,7 +4,7 @@ import subprocess
 import json
 import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 
 import docker
 import psutil
@@ -16,7 +16,7 @@ import image_drift
 import staleness
 from logger import logger
 from poll_state import get_poll_report
-from system_monitor_types import Identity, Payload, Poll, Status, Updater, Version
+from system_monitor_types import Identity, ImageDriftCheck, Payload, Poll, Status, Updater, Version
 from updater import get_error, get_status_for_ui, get_updater_report, get_updating_state_for_ui, set_error, set_status_for_ui
 
 # Pseudo filesystems that are full by design and say nothing about real disk pressure.
@@ -43,6 +43,7 @@ class SystemMonitor:
     metrics: dict
     services: dict
     image_drift: list
+    image_drift_check: ImageDriftCheck
     stale_components: list
     node_address: str = ""
     eth_address: str = ""
@@ -58,6 +59,8 @@ class SystemMonitor:
         self.metrics = {}
         self.services = {}
         self.image_drift = []
+        # Empty until a check completes: nothing confirmed current yet.
+        self.image_drift_check = ImageDriftCheck(CheckedAt="", RegistryCheckedAt="", Current=[])
         self.stale_components = []
         self.updater = Updater(
             Branch="", AppliedCommit="", AppliedAt="", CheckedOutCommit="", RunningCommit="",
@@ -92,6 +95,7 @@ class SystemMonitor:
                 Metrics=self.metrics,
                 Services=self.services,
                 ImageDrift=self.image_drift,
+                ImageDriftCheck=self.image_drift_check,
                 StaleComponents=self.stale_components,
                 Updater=self.updater,
                 Poll=self.poll,
@@ -130,7 +134,7 @@ class SystemMonitor:
         timestamp = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
         # Collected before the status is read, so anything found makes it into this same report.
-        self.image_drift = self._get_image_drift()
+        self.image_drift, self.image_drift_check = self._get_image_drift(timestamp)
         self.stale_components = self._get_stale_components()
         self._check_disk_usage(metrics["Disks"])
 
@@ -157,30 +161,46 @@ class SystemMonitor:
         logger.debug("Current version: %s", self.version)
         logger.debug("System status updated.")
 
-    def _get_image_drift(self) -> list[dict]:
-        """Returns the services whose running image is not what the compose file asks for"""
+    def _get_image_drift(self, timestamp: str) -> tuple[list[dict], ImageDriftCheck]:
+        """Returns the drifted services, and which services the same check confirmed current.
 
+        The second half is what lets a consumer tell "nothing drifted" from "nothing was
+        checked": an empty drift list alone says neither.
+        """
+
+        unchecked = ImageDriftCheck(CheckedAt="", RegistryCheckedAt="", Current=[])
         compose_file = os.getenv("DOCKER_COMPOSE_FILE")
 
         if not compose_file:
             logger.error("DOCKER_COMPOSE_FILE is not set, skipping the image drift check")
-            return []
+            return [], unchecked
 
         try:
-            drifted = image_drift.check(self._client, compose_file)
+            records = image_drift.inspect(self._client, compose_file)
         except Exception as error:  # pylint: disable=broad-except
             # Drift reporting must never take the poll down with it - a node that cannot
             # check is still a node that should report its metrics.
             logger.error("Could not check for image drift: %s", error)
-            return []
+            return [], unchecked
 
+        drifted = [record for record in records if image_drift.is_drifted(record)]
         summary = image_drift.summarize(drifted)
 
         if summary:
             logger.info(summary)
             set_status_for_ui(summary)
 
-        return drifted
+        registry_checked_at = image_drift.registry_checked_at()
+
+        return drifted, ImageDriftCheck(
+            CheckedAt=timestamp,
+            RegistryCheckedAt=(
+                datetime.fromtimestamp(registry_checked_at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                if registry_checked_at
+                else ""
+            ),
+            Current=[record["Service"] for record in records if image_drift.is_current(record)],
+        )
 
     def _get_stale_components(self) -> list[dict]:
         """Returns the components that have stopped refreshing their status file"""

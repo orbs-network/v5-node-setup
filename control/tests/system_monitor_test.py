@@ -57,6 +57,8 @@ def test_get_initial_response(mocker: MockerFixture) -> None:
             "Metrics": {},
             "Services": {},
             "ImageDrift": [],
+            # No check has run, so nothing is confirmed current yet.
+            "ImageDriftCheck": {"CheckedAt": "", "RegistryCheckedAt": "", "Current": []},
             "StaleComponents": [],
             # Before a poll has run, so the state is "unknown" rather than "idle" - not
             # having asked yet is a different thing from having asked and found nothing

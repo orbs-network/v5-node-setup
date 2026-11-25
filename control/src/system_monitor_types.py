@@ -56,6 +56,17 @@ class Poll(TypedDict):
     Kills: int
 
 
+class ImageDriftCheck(TypedDict):
+    """What the image drift check actually covered, so an empty ImageDrift can be read"""
+
+    # When this poll's check completed; empty if it could not run.
+    CheckedAt: str
+    # When every registry digest was last read in full; empty if never.
+    RegistryCheckedAt: str
+    # Services confirmed to run exactly what the registry serves.
+    Current: List[str]
+
+
 class Payload(TypedDict):
     """Further breakdown of the status object"""
 
@@ -64,6 +75,7 @@ class Payload(TypedDict):
     Metrics: Dict[str, Any]
     Services: Dict[str, Any]
     ImageDrift: List[Dict[str, Any]]
+    ImageDriftCheck: ImageDriftCheck
     StaleComponents: List[Dict[str, Any]]
     Updater: Updater
     Poll: Poll

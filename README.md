@@ -294,6 +294,7 @@ anything against the endpoint. In brief:
 - `Payload.Services[]` — one entry per running container, including `ImageTag` and
   `ImageDigest` read from the **running container**, not from the compose file
 - `Payload.ImageDrift[]` — only the services that have drifted
+- `Payload.ImageDriftCheck` — when drift was checked and which services it confirmed current
 - `Payload.StaleComponents[]` — only the components not reporting freshly
 
 Other files under `.data/control/`: `log.txt` (+ `.1`…`.3`), `applied_commit.json`,
