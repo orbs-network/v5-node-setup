@@ -90,7 +90,7 @@ services:
     environment:
       - ETHEREUM_ELECTIONS_CONTRACT=0x02Ca9F2c5dD0635516241efD480091870277865b
       - ETHEREUM_ENDPOINT
-      - NODE_PRIVATE_KEY
+      # No NODE_PRIVATE_KEY: the writer never reads it, it signs through the signer.
       - SIGNER_ENDPOINT
       - NODE_ADDRESS
       - MANAGEMENT_SERVICE_ENDPOINT=http://nginx/service/ethereum-reader

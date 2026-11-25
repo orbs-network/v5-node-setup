@@ -502,7 +502,7 @@ read both by `docker compose` and by `scripts/run-control.sh`.
 
 | Variable | Used by | Notes |
 |---|---|---|
-| `NODE_PRIVATE_KEY` | signer, ethereum-writer | written at install |
+| `NODE_PRIVATE_KEY` | signer | written at install; only the signer gets it |
 | `NODE_ADDRESS` | most services, control | no `0x` prefix on disk |
 | `ETHEREUM_ENDPOINT`, `MATIC_ENDPOINT` | readers, writer | RPC |
 | `SIGNER_ENDPOINT` | ethereum-writer | |
