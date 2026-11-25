@@ -43,7 +43,7 @@ services:
     logging: *default-logging
     container_name: ethereum-reader
     # Pinned by digest: a tag can be re-pushed on Docker Hub, the digest cannot.
-    image: orbsnetworkstaging/evm-reader:v5.3.1@sha256:2bd5a80c1c0a2bf38de0120425030c1de75d729eb9131091e5d700c550092ff4
+    image: orbsnetworkstaging/evm-reader:v5.3.2@sha256:e555a09faa6b2945a9bad5b7715e2455f1b30577851da07761d761b2fae9591d
     command: "npm start"
     # Also holds the state cache (cache/state.json.gz), so a restart resumes instead of
     # replaying from the first block. nginx serves only status.json from here.
@@ -64,7 +64,7 @@ services:
   matic-reader:
     logging: *default-logging
     container_name: matic-reader
-    image: orbsnetworkstaging/evm-reader:v5.3.1@sha256:2bd5a80c1c0a2bf38de0120425030c1de75d729eb9131091e5d700c550092ff4
+    image: orbsnetworkstaging/evm-reader:v5.3.2@sha256:e555a09faa6b2945a9bad5b7715e2455f1b30577851da07761d761b2fae9591d
     command: "npm start"
     # Also holds the state cache, like ethereum-reader's.
     volumes:
@@ -77,6 +77,12 @@ services:
       # holds an event. Changing it invalidates the state cache, so only change it on purpose.
       - ETHEREUM_FIRST_BLOCK=25502847
       - ETHEREUM_POLL_INTERVAL_SECONDS=300
+      # rpcman's Polygon backends reject getLogs ranges over 10k blocks and time out on wide
+      # ones, so keep every page at 10k and give up on a hung request after 10s. Measured:
+      # about 3k blocks/s with no RPC errors. ethereum-reader keeps the defaults.
+      - ETHEREUM_HTTP_TIMEOUT_SECONDS=10
+      - ETHEREUM_GETLOGS_INITIAL_PAGE_BLOCKS=10000
+      - ETHEREUM_GETLOGS_MAX_PAGE_BLOCKS=10000
     healthcheck:
       test: "test $$(( $$(date +%s) - $$(stat -c %Y /opt/orbs/status/status.json) )) -lt 600"
 
